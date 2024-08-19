@@ -61,7 +61,7 @@ This will display usage instructions.
 To download, extract, and flatten the `GCF_034140825.1` genome, type:
 
 ```
-Rscript ncbi.r GCF_034140825.1
+Rscript ncbi.r GCF_034140825.1.zip
 ```
 
 This will download the Rice reference genome and create two files in your current path:
