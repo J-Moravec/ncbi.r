@@ -7,7 +7,7 @@ Download, extract, and flatten NCBI genome archive.
 
 The NCBI genome archive allows you to download reference genomes through a web interface or through
 REST API in a nice `zip` archive.
-There is only one issue, it comes in a deep nested structure with a lot of ancilary files.
+There is only one issue, it comes in a deep nested structure with a lot of ancillary files.
 
 For instance, after downloading the reference genome of Rice (_Oryza sativa Japonica Group_) with ID `GCF_034140825.1` through the web interface, selecting only the `gtf` file to minimize the download size, the `ncbi_dataset.zip` has the following structure:
 
