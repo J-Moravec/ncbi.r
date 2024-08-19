@@ -1,3 +1,4 @@
+#!/bin/env Rscript
 #' ncbi.r
 #'
 #' Download, extract, and flatten NCBI genome archive.
