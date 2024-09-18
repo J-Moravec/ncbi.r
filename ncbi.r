@@ -20,16 +20,13 @@ replace_ext = function(x, ext){
     }
 
 
-download = function(x, id = NULL, types = c("GENOME_FASTA", "GENOME_GTF"), overwrite = FALSE,
+download = function(x, dir = ".", types = c("GENOME_FASTA", "GENOME_GTF"), overwrite = FALSE,
                     quiet = TRUE, timeout = 3600){
 
-    if(is.null(id)){
-        id = basename_sans_ext(x)
-        }
+    dest = file.path(dir, paste0(x, ".zip"))
 
-    if(file.exists(x) && !overwrite)
-        return(invisible())
-
+    if(file.exists(dest) && !overwrite)
+        return(invisible(dest))
     formats = c("GENOME_FASTA", "GENOME_GFF", "GENOME_GTF", "RNA_FASTA",
                 "CDS_FASTA", "PROT_FASTA", "SEQUENCE_REPORT")
     types = match.arg(types, formats, several.ok = TRUE)
@@ -39,27 +36,38 @@ download = function(x, id = NULL, types = c("GENOME_FASTA", "GENOME_GTF"), overw
 
     url = paste0(
         base,
-        id, "/download?include_annotation_type=",
+        x, "/download?include_annotation_type=",
         types
         )
 
+    # Remove file if something stopped the download
+    ok = FALSE
+    on.exit(
+        if(!ok){
+            file.remove(dest)
+            stop("Download of '", x, "' from NCBI failed.", call. = FALSE)
+            },
+        add = TRUE
+        )
+
     op = options("timeout" = timeout)
-    err = download.file(url, x, quiet = quiet)
+    err = download.file(url, dest, quiet = quiet)
+    ok = TRUE
     options(op)
 
     if(err != 0){
-        file.remove(x)
-        stop(paste0("Download of '", id, "' from NCBI failed."))
+        file.remove(dest)
+        stop(paste0("Download of '", x, "' from NCBI failed."))
         }
 
     # If invalid ID is provided, the download progresses normally but the file is malformed.
     # The usual size of such file seems to be 855 bytes.
-    if(file.size(x) < 1000){
-        file.remove(x)
-        stop(paste0("The requested ID '", id, "' doesn't exist."))
+    if(file.size(dest) < 1000){
+        file.remove(dest)
+        stop(paste0("The requested ID '", x, "' doesn't exist."))
         }
 
-    invisible()
+    invisible(dest)
     }
 
 
