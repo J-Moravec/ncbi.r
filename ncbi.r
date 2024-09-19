@@ -1,15 +1,9 @@
 #!/bin/env Rscript
-#' ncbi.r
-#'
-#' Download, extract, and flatten NCBI genome archive.
-#'
-#' See:
-#'
-#' Rscript ncbi.r --help
-#'
-#' for usage information
-
-
+# ---------------------------------------------------------------------------- #
+# ncbi.r: Download genomic files from the NCBI genome archive
+# version: 1.1.0
+# https://github.com/J-Moravec/ncbi.r
+# ---------------------------------------------------------------------------- #
 basename_sans_ext = function(x){
     tools::file_path_sans_ext(basename(x))
     }
@@ -20,15 +14,13 @@ replace_ext = function(x, ext){
     }
 
 
-download = function(x, id = NULL, types = c("GENOME_FASTA", "GENOME_GTF"), overwrite = FALSE,
+download = function(x, dir = ".", types = c("GENOME_FASTA", "GENOME_GTF"), overwrite = FALSE,
                     quiet = TRUE, timeout = 3600){
 
-    if(is.null(id)){
-        id = basename_sans_ext(x)
-        }
+    dest = file.path(dir, paste0(x, ".zip"))
 
-    if(file.exists(x) && !overwrite)
-        return(invisible())
+    if(file.exists(dest) && !overwrite)
+        return(invisible(dest))
 
     formats = c("GENOME_FASTA", "GENOME_GFF", "GENOME_GTF", "RNA_FASTA",
                 "CDS_FASTA", "PROT_FASTA", "SEQUENCE_REPORT")
@@ -39,72 +31,132 @@ download = function(x, id = NULL, types = c("GENOME_FASTA", "GENOME_GTF"), overw
 
     url = paste0(
         base,
-        id, "/download?include_annotation_type=",
+        x, "/download?include_annotation_type=",
         types
         )
 
+    # Remove file if something stopped the download
+    ok = FALSE
+    on.exit(
+        if(!ok){
+            file.remove(dest)
+            stop("Download of '", x, "' from NCBI failed.", call. = FALSE)
+            },
+        add = TRUE
+        )
+
     op = options("timeout" = timeout)
-    err = download.file(url, x, quiet = quiet)
+    err = download.file(url, dest, quiet = quiet)
+    ok = TRUE
     options(op)
 
     if(err != 0){
-        file.remove(x)
-        stop(paste0("Download of '", id, "' from NCBI failed."))
+        file.remove(dest)
+        stop(paste0("Download of '", x, "' from NCBI failed."))
         }
 
     # If invalid ID is provided, the download progresses normally but the file is malformed.
     # The usual size of such file seems to be 855 bytes.
-    if(file.size(x) < 1000){
-        file.remove(x)
-        stop(paste0("The requested ID '", id, "' doesn't exist."))
+    if(file.size(dest) < 1000){
+        file.remove(dest)
+        stop(paste0("The requested ID '", x, "' doesn't exist."))
         }
 
-    invisible()
+    invisible(dest)
     }
 
 
-extract = function(x, local = FALSE){
+extract = function(x, dir = ".", keep = FALSE){
     ext = tools::file_ext(x)
     prefix = basename_sans_ext(x)
 
     if(ext != "zip")
         stop(paste0("Unrecognised extension '", ext, "'. Only zip archives are supported.")) 
 
-    workdir = file.path(if(local) dirname(x) else tempdir(), prefix)
+    workdir = file.path(dir, prefix)
     unzip(x, exdir = workdir, unzip = "unzip")
+
+    if(!keep)
+        file.remove(x)
+
+    invisible(workdir)
     }
 
 
-flatten = function(x, local = FALSE, clean = TRUE){
-    prefix = basename_sans_ext(x)
+get_assembly_name = function(x){
+    y = readLines(x)
+    regmatches(y, regexpr("assemblyName\":\"([^\"]*)", y)) |> substring(16)
+    }
 
-    workdir = file.path(if(local) dirname(x) else tempdir(), prefix)
-    files = file.path(workdir, unzip(x, list = TRUE)$Name)
 
-    lapply(files, move, dir = dirname(x), prefix = prefix)
+format_mapping_table = function(id, assembly_name, formats = NULL){
+    genome_fasta = paste(id, assembly_name, "genomic.fna", sep = "_")
 
-    if(clean)
-        unlink(workdir, recursive = TRUE, force = TRUE)
+    id_ext = function(ext){
+        paste0(id, ".", ext)
+        }
 
-    invisible()
+    mapping = list(
+        c("GENOME_FASTA", genome_fasta, id_ext("fna")),
+        c("GENOME_GFF", "genomic.gff", id_ext("gff")),
+        c("GENOME_GTF", "genomic.gtf", id_ext("gtf")),
+        c("RNA_FASTA", "rna.fna", id_ext("rna.fna")),
+        c("CDS_FASTA", "cds_from_genomic.fna", id_ext("cds.fna")),
+        c("PROT_FASTA", "protein.faa", id_ext("faa")),
+        c("SEQUENCE_REPORT", "sequence_report.jsonl", id_ext("jsonl"))
+        ) |> do.call(what = rbind.data.frame) |> setNames(c("formats", "old", "new"))
+    mapping[["old"]] = file.path("ncbi_dataset", "data", id, mapping[["old"]])
+
+    if(!is.null(formats))
+        mapping = mapping[match(formats, mapping[["formats"]], nomatch = 0),]
+
+    mapping
     }
 
 
 "%nin%" = Negate("%in%")
 
+flatten = function(
+    x, dir = ".",
+    types = c("GENOME_FASTA", "GENOME_GFF", "GENOME_GTF", "RNA_FASTA",
+                "CDS_FASTA", "PROT_FASTA", "SEQUENCE_REPORT"),
+    keep = FALSE, overwrite = FALSE
+    ){
+    formats = match.arg(types, several.ok = TRUE)
+    prefix = basename_sans_ext(x)
 
-move = function(x, dir, prefix){
-    ext = tools::file_ext(x)
+    # early exit
+    new_files = file.path(dir, format_mapping_table(prefix, "phony", formats)$new)
+    if(all(file.exists(new_files)) && !overwrite)
+        return(invisible(new_files))
 
-    if(ext %nin% c("fna", "gtf"))
-        return()
 
-    new_path = file.path(dir, paste0(prefix, ".", ext))
-    file.copy(x, new_path)
+    y = extract(x, dir = dir, keep = keep)
+    assembly_name = get_assembly_name(
+        file.path(y, "ncbi_dataset", "data", "assembly_data_report.jsonl")
+        )
+    mapping = format_mapping_table(prefix, assembly_name, formats)
+
+    # safety check
+    files = list.files(y, recursive = TRUE)
+    if(!all(mapping$old %in% files)){
+        missing = mapping$formats[mapping$old %nin% files]
+        stop("Some of the requested formats are not in the NCBI archive:\n", toString(missing))
+        }
+
+    # move and remove
+    old_files = file.path(y, mapping$old)
+    file.rename(old_files, new_files) # no copying involved, should be faster
+
+    # always remove the folder
+    if(TRUE)
+        unlink(y, recursive = TRUE, force = TRUE)
+
+    invisible(new_files)
     }
 
 
-gzip = function(x, out = NULL, overwrite=FALSE, keep = FALSE){
+gzip = function(x, out = NULL, overwrite = FALSE, keep = FALSE){
     if(is.null(out))
         out = paste0(x, ".gz")
 
@@ -286,49 +338,49 @@ usage = function(){
     prog = get_scriptname()
     blnk = strrep(" ", nchar(prog))
     cat(paste0(
-        "Usage: ", prog, " [options] file.zip\n",
-        "Download, extract, and flatten NCBI genome archive.\n\n",
-        "  -d,  --download  download genomic archive from NCBI\n",
-        "  -o,  --overwrite overwrite archive if it exists\n",
-        "  -e,  --extract   extract genomic archive\n",
-        "  -l,  --locally   extract the archive locally\n",
-        "  -f,  --flatten   flatten the extracted archive\n",
-        "  -g,  --gzip      gzips output files to save space\n",
-        "  -h,  --help      display this help and exit\n",
-        "\n",
-        "The option can be specified in the POSIX-like format. Both long and\n",
-        "short options are allowed. By default, ", prog, " downloads, extracts,\n",
-        "and flattens the specified archive. When any argument is specified,\n",
-        "this behaviour is suppressed. This is useful when the archive is already\n",
-        "downloaded.\n\n",
-        "The file must be in the format [NCBI ID].zip, where [NCBI ID] is the ID\n",
-        "of the genome that will be downloaded from NCBI genome website, see:\n",
-        "https://www.ncbi.nlm.nih.gov/datasets/genome/ for more information.\n\n",
-        "If the '-el' options are specified, the archive is extracted into the\n",
-        "local directory. To flatten this extracted archive, '-fl' needs\n",
-        "to be specified.\n\n",
-        "Examples:\n",
-        "  Rscript ", prog, " file.zip       downloads, extracts, and flattens\n",
-        "  Rscript ", prog, " -ref file.zip  equivalent to above\n",
-        "  Rscript ", prog, " -ef file.zip   only extract and flattens\n",
-        "  Rscript ", prog, " -el file.zip   archive is extracted to a local path\n",
-        "  Rscript ", prog, " -e  file.zip   archive is extracted to a temp path,\n",
-        "          ", blnk, "                this path is deleted when R session\n",
-        "          ", blnk, "                ends, so no output is produced.\n",
-        "  Rscript ", prog, " -g file.zip    gzip the fna and gtf files in the zip\n",
-        "          ", blnk, "                producing file.fna.gz and file.gtf.gz\n\n"
+"Usage: ", prog, " [options] ID\n",
+"Download and flatten NCBI genome archive. By default, the archive is\n",
+"downloaded, the requested files are extracted and gzipped. If any of\n",
+"the options download, flatten, and gzip are specified, this behaviour\n",
+"is supressed.\n\n",
+"  -d,  --download   download genomic archive from NCBI\n",
+"  -f,  --flatten    flatten the archive\n",
+"  -g,  --gzip       gzips output files to save space\n",
+"  -o,  --overwrite  overwrite existing files\n",
+"  -k,  --keep       keep the genomic archive\n",
+"       --dir        directory where the files will be downloaded\n",
+"  -t,  --type=TYPES comma separated list of types, see details\n",
+"  -h,  --help       display this help and exit\n",
+"\n",
+"ID is the NCBI id of genome that will be downloaded from the NCBI genome\n",
+"website, see: https://www.ncbi.nlm.nih.gov/datasets/genome/\n",
+"TYPES are comma separated list of types, allowed types are:\n",
+"GENOME_FASTA, GENOME_GFF, GENOME_GTF, RNA_FASTA, CDS_FASTA,\n",
+"PROT_FASTA, and SEQUENCE_REPORT. Spaces are not allowed.\n",
+"By default, GENOME_FASTA and GENOME_GTF are downloaded.\n\n",
+"Examples:\n",
+"  Rscript ", prog, " GCF_000091225.2\n",
+"          ", blnk, " downloads the reference genome fasta and gtf file for\n",
+"          ", blnk, " Eencephalitozoon cuniculi GB-M1\n",
+"  Rscript ", prog, " -dfgt GENOME_FASTA,GENOME_GTF GCF_000091225.2\n",
+"  Rscript ", blnk, " equivalent to the above\n",
+"  Rscript ", prog, " -fgk GCF_000091225.2.zip\n",
+"  Rscript ", blnk, " extract and preserve already existing archive\n",
+"  Rscript ", prog, " -dkt PROT_FASTA --dir PATH GCF_000091225.2\n",
+"  Rscript ", blnk, " download only the protein sequences into path\n\n"
         ))
     }
 
 
 opts = list(
     opt("--download", "-d", flag = TRUE),
-    opt("--extract", "-e", flag = TRUE),
     opt("--flatten", "-f", flag = TRUE),
-    opt("--local", "-l", flag = TRUE),
-    opt("--overwrite", "-o", flag = TRUE),
     opt("--gzip", "-g", flag = TRUE),
-    opt("file")
+    opt("--overwrite", "-o", flag = TRUE),
+    opt("--keep", "-k", flag = TRUE),
+    opt("--dir", default = "."),
+    opt("--type", "-t", default = c("GENOME_FASTA,GENOME_GTF")),
+    opt("id")
     )
 
 
@@ -340,41 +392,53 @@ main = function(){
         return(invisible())
         }
 
-    if(is.null(args$file))
+    if(is.null(args$id)){
+        usage()
         stop("Not enough argument.", call. = FALSE)
+        }
 
-    if(tools::file_ext(args$file) != "zip")
-        stop(paste0("Unrecognised extension '", ext, "'. Only zip archives are supported.")) 
 
-    # implement requested default behaviour
-    default = c("download", "extract", "flatten", "gzip")
+    types = c("GENOME_FASTA", "GENOME_GFF", "GENOME_GTF", "RNA_FASTA",
+             "CDS_FASTA", "PROT_FASTA", "SEQUENCE_REPORT")
+    if(identical(args$type, "all")){
+        args$type = types
+        } else {
+        args$type = strsplit(args$type, ",", fixed = TRUE)[[1]]
+        }
+
+    if(any(args$type %nin% types))
+        stop("Unknown types:", toString(args$type[args$type %nin% type]))
+
+    # default behaviour
+    default = c("download", "flatten", "gzip")
     if(all(unlist(args[default]) == FALSE)) args[default] = TRUE
 
-    targets = replace_ext(args$file, c("fna", "gtf"))
+    # targets
+    targets = file.path(args$dir, format_mapping_table(args$id, "phony", args$type)$new)
+
     if(args$gzip)
         targets = paste0(targets, ".gz")
+
     redo = args$overwrite || !all(file.exists(targets))
 
+    # Nothing needs to be done
+    if(!redo){
+        return(invisible(targets))
+        }
+
+    var = args$id
     if(args$download)
-        download(args$file, overwrite = args$overwrite)
+        var = download(var, dir = args$dir, types = args$type, overwrite = args$overwrite)
 
-    if(args$extract && args$flatten && redo){
-        extract(args$file, args$local)
-        flatten(args$file, args$local)
-        }
+    if(args$flatten)
+        var = flatten(var, dir = args$dir, types = args$type, keep = args$keep,
+                overwrite = args$overwrite)
 
-    if(args$extract && !args$flatten)
-        extract(args$file, args$local)
+    if(args$gzip)
+        sapply(var, gzip, overwrite = args$overwrite)
 
-    if(!args$extract && args$flatten)
-        flatten(args$file, args$local)
-
-    if(args$gzip){
-        gzip(replace_ext(args$file, "fna"), overwrite = args$overwrite)
-        gzip(replace_ext(args$file, "gtf"), overwrite = args$overwrite)
-        }
+    invisible()
     }
-
 
 if(sys.nframe() == 0){
     main()
