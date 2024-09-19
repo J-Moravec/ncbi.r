@@ -12,6 +12,7 @@ if(sys.nframe() == 0) set_script_dir()
 
 source("tests/mutr.r")
 source("tests/test-mutr.r")
+source("tests/helpers.r")
 source("ncbi.r")
 
 TEST_INIT()
